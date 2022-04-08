@@ -8,7 +8,7 @@ from .core._build.builder import builder as _builder
 from .core._prepare.register import register as _register
 from .core._runtime.context import context as _context
 from .core.base import Singleton as _Singleton
-from .core.base import Lazy, Volatile, Group
+from .core.base import Lazy, Volatile, Group, Strategy
 from .core.decorators import component, interface, strategy, factory
 
 _started = False
@@ -31,6 +31,8 @@ def add_file_config(filename: str):
 def start():
     global context
     global _started
+    if _started:
+        raise AlreadyStarted()
     if not _configured:
         configure()
     _builder._context = _context

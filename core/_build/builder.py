@@ -1,9 +1,8 @@
-from abc import ABC, abstractmethod, abstractproperty
-import collections
-from functools import cached_property
-from typing import ForwardRef, List, Set, Tuple, get_origin, get_args, Any, Type
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import ForwardRef, Optional, get_origin, get_args, Any, Type
 
-from ..base import Group, Lazy, Singleton, Component, Dependency, ALL, Volatile
+from ..base import Group, Lazy, Singleton, Component, Dependency, ALL, Volatile, Strategy
 from .._prepare.register import register
 from ..exceptions import  ImproperlyConfigured, MoreThanOneCandidateFound, InconsistentGroup, ScopeNotFound, NoCandidatesFound, \
     AttributeWasNotInjected
@@ -74,6 +73,16 @@ class VolatileDependency(BaseDependency):
     def __set__(self, instance: Any, value: Any):
         self.inject(instance, value)
 
+@dataclass
+class ParsingResult:
+    interface: Optional[Type] = None
+    collection: Optional[Type] = None 
+    is_lazy: bool = False
+    is_volatile: bool = False
+    group_name: Optional[str] = None
+    use_strategy: bool = False
+
+
 
 class BaseDependencyBuilder(ABC):
 
@@ -109,11 +118,10 @@ class SimpleDependencyBuilder(BaseDependencyBuilder):
 
     def dependency(self):
         interface = self.typehint
+        if not register.is_interface(interface) or VarType:
+            return False
         return Dependency( interface=interface, 
-                           inject_immidiately=True,
-                           is_lazy=False,
-                           is_volatile=False,
-                           collection=None)
+                           inject_immidiately=True)
 
     def descriptor(self):
         return SimpleDependency
@@ -130,8 +138,6 @@ class CollectionDependencyBuilder(BaseDependencyBuilder):
         interface = get_args(self.typehint)[0]
         return Dependency(interface=interface, 
                           inject_immidiately=True,
-                          is_lazy=False,
-                          is_volatile=False,
                           collection=self.origin)
 
     def descriptor(self):
@@ -144,18 +150,18 @@ class LazyDependencyBuilder(BaseDependencyBuilder):
         self.child_type = None
 
     def _is_my_dependency(self, typehint):
-
+        if self.origin != Lazy:
+            return False
         self.child_type = get_args(typehint)[0]
         child_origin = get_origin(self.child_type)  
-        return self.origin == Lazy and child_origin not in (list, set)
+        if child_origin == Volatile:
+            raise ImproperlyConfigured("Lazy[Volatile] dependencies make no sense and not supported")
+        return child_origin not in (list, set, tuple)
 
     def dependency(self):
         interface = self.child_type
         return Dependency(interface=interface,
-                          inject_immidiately=False,
-                          is_lazy=True,
-                          is_volatile=False,
-                          collection=None)
+                          is_lazy=True)
 
     def descriptor(self):
         return LazyDependency
@@ -164,15 +170,22 @@ class LazyDependencyBuilder(BaseDependencyBuilder):
 class VolitiledencyBuilder(BaseDependencyBuilder):
 
     def _is_my_dependency(self, typehint):
-        return self.origin == Volatile
+        if self.origin != Volatile:
+            return False
+        self.child_type = get_args(typehint)[0]
+        child_origin = get_origin(self.child_type)  
+        if child_origin == Lazy:
+            raise ImproperlyConfigured("Volatile[Lazy]] dependencies make no sense and are not supported")
+        if child_origin in (list, set, tuple):
+            raise ImproperlyConfigured(f"Volatile[{child_origin}]] dependencies are not supported")
+
+        return False
+
 
     def dependency(self):
         interface = get_args(self.typehint)[0]
         return Dependency(interface=interface, 
-                          inject_immidiately=False,
-                          is_lazy=False,
-                          is_volatile=True,
-                          collection=None)
+                          is_volatile=True)
 
     def descriptor(self):
         return VolatileDependency 
@@ -183,15 +196,13 @@ class LazyCollectionDependencyBuilder(BaseDependencyBuilder):
     def _is_my_dependency(self, typehint):
         self.child_type = get_args(typehint)[0]
         child_origin = get_origin(self.child_type)  
-        return self.origin == Lazy and child_origin in (list, set)
+        return self.origin == Lazy and child_origin in (list, set, tuple)
     
     def dependency(self):
         child_origin = get_origin(self.child_type)  
         interface = get_args(self.child_type)[0] 
         return Dependency(interface=interface, 
-                          inject_immidiately=False,
                           is_lazy=True,
-                          is_volatile=False,
                           collection=child_origin)
 
     def descriptor(self):
@@ -218,28 +229,80 @@ class GroupDependancyBuilder(BaseDependencyBuilder):
         collection = get_origin(collection)
         return Dependency(group=group, 
                           inject_immidiately=True,
-                          is_lazy=False,
-                          is_volatile=False,
                           collection=collection)
 
     def descriptor(self):
         return SimpleDependency
 
 
+class StrategyDependencyBuilder(BaseDependencyBuilder):
+
+    def _is_my_dependency(self, typehint):
+        if self.origin != Strategy:
+            return False 
+        args = get_args(typehint)
+        if len(args) != 1:
+            raise ImproperlyConfigured(f"Strategy[group_name: str] expected, {args} given")
+        child_origin = get_origin(args[0])  
+        if (child_origin in (list, set, tuple)
+            or not isinstance(child_origin, ForwardRef) 
+            or not isinstance(child_origin .__forward_arg__, str)):
+            raise ImproperlyConfigured(f"Strategy[{child_origin}] makes no sense and is not supported")
+        return True 
+    
+    def dependency(self):
+        group = get_args(self.typehint)
+        group = group.__forward_arg__
+        collection = get_origin(collection)
+        return Dependency(group=group, 
+                          inject_immidiately=True,
+                          use_strategy=True)
+
+    def descriptor(self):
+        return SimpleDependency
+
+def _parse_type_hint(typehint, result=None):
+    origin = get_origin(typehint)
+    result = result or ParsingResult()
+    if origin in (list, set, tuple):
+        result.collection = origin
+    elif register.is_interface(origin):
+        result.interface = origin
+    else:
+        return
+    children = get_args(typehint)
+    if len(children) > 1:
+        raise ImproperlyConfigured(f"One of Interface, Interface[Lazy], Interface[Volatile], "
+                                   f"List[Interface[Group["name"]]], List[Interface], Interface[Strategy["name"]] expected,
+                                   f"but {typehint} given")
+    nested = children[0]
+    nested_origin = get_origin(nested)
+    if nested_origin == Lazy:
+        result.is_lazy = True
+    elif nested_origin == Volatile:
+        result.is_volatile = True
+    elif register.is_interface(nested_origin):
+        return _parse_type_hint(nested, result=result)
+    elif nested_origin == Group:
+        result.group_name = get_args(nested)[0].__forward_arg__ 
+    elif nested_origin == Strategy:
+        result.group_name = get_args(nested)[0].__forward_arg__ 
+        result.use_strategy = True
+    else:
+        raise ImproperlyConfigured(f"One of Interface, Interface[Lazy], Interface[Volatile], "
+                                   f"List[Interface[Group["name"]]], List[Interface], Interface[Strategy["name"]] expected,
+                                   f"but {typehint} given")
+    return result
+
+
+def _validate_type_hint(parsing_result):
+    pass 
+
 def get_dependency_builder(typehint):
-    for builder_class in (SimpleDependencyBuilder,
-                          GroupDependancyBuilder,                   
-                          CollectionDependencyBuilder,
-                          LazyDependencyBuilder,
-                          VolitiledencyBuilder,
-                          LazyCollectionDependencyBuilder):
-        builder = builder_class()
-        if builder.is_my_depependency(typehint):
-            return builder
-
-
-# TODO lazy[volatile] and volatile[lazy] and volatile[list]
-
+    parsing_result = _parse_type_hint(typehint)
+    if not parsing_result:
+        return
+    
 
 class Builder(Singleton):
 

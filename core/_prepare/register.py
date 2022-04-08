@@ -1,4 +1,4 @@
-from typing import Dict, Type, List, Iterator, Protocol, Any
+from typing import Dict, Optional, Type, List, Iterator, Protocol, Any
 from ..base import Component, Singleton, Scope
 from ..exceptions import ScopeRedeclaration, GroupFactoryNotFound, GroupNotFound
 
@@ -53,14 +53,11 @@ class Register(Singleton):
     def get_named_component(self, component_name: str) -> Component:
         return self.named_components.get(component_name)
 
-    def get_factory(self, factory_name: str):
+    def get_factory(self, factory_name: str) -> Optional[Factory]:
         return self.factories.get(factory_name)
-    # def get_group_factory(self, group_name: str) -> GroupFactory:
-    #     if group_name not in self.groups:
-    #         raise GroupNotFound("No group found '{group_name}'")
-    #     if group_name not in self.group_factories:
-    #         raise GroupFactoryNotFound(f"No group factory found for group {group_name}")
-    #     return self.group_factories[group_name]
+
+    def get_strategy(self, group_name: str) -> Optional[Strategy]:
+        return self.strategies(group_name)
 
     def get_group(self, group_name: str) -> List[Component]:
         if group_name not in self.groups:

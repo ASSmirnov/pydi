@@ -1,8 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from tokenize import group
 from typing import Any, _ProtocolMeta, Type, List, Dict, Optional, Set, TypeVar, Generic, Tuple
-
 from .exceptions import FinishedSingletonUsage
 
 ALL = "all"
@@ -16,6 +14,7 @@ class Dependency:
     is_lazy: bool = False
     is_volatile: bool = False
     inject_immidiately: bool = False
+    use_strategy: bool = False
 
 
 @dataclass
@@ -89,5 +88,10 @@ class Volatile(Generic[T]):
 
 Col = TypeVar("Col", List, Set, Tuple)
 
+
 class Group(Generic[T, Col]):
+    pass
+
+
+class Strategy(Generic[T]):
     pass
